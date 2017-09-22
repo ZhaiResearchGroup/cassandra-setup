@@ -1,5 +1,4 @@
 from cassandra.cluster import Cluster
-import email_parse
 import os
 import uuid
 import json
@@ -11,12 +10,12 @@ def revert_setup(cass_session, keyspace_name):
     revert_query = "DROP KEYSPACE %s" % (keyspace_name)
     cass_session.execute(revert_query)
 
-def insert(cass_session, keyspace_name, table_name, email):
+def insert(cass_session, keyspace_name, table_name, data):
     """
-    Inserts an email into the cassandra database
+    Inserts data into the cassandra database
     """
     prepared = cass_session.prepare('INSERT INTO %s.%s JSON ?' % (keyspace_name, table_name))
-    cass_session.execute(prepared, [json.dumps(email, ensure_ascii=False)])
+    cass_session.execute(prepared, [json.dumps(data, ensure_ascii=False)])
 
 def create_table(cass_session, keyspace_name, table_name, columns_string):
     """
@@ -32,33 +31,77 @@ def create_keyspace(cass_session, keyspace_name):
     create_keyspace_query = "CREATE KEYSPACE IF NOT EXISTS %s WITH REPLICATION = {'class' : 'SimpleStrategy', 'replication_factor' : 1 };" % (keyspace_name)
     cass_session.execute(create_keyspace_query)
 
-def cassandra_setup(keyspace_name, initial_table_name, initial_table_columns):
-    """
-    Initiates the cassandra set up process
-    """
-    cluster = Cluster(['127.0.0.1'])
-    session = cluster.connect()
-
-    create_keyspace(session, keyspace_name)
-    create_table(session, keyspace_name, initial_table_name, initial_table_columns)
-
-    enron_data = get_enron_data(enron_path)
-
-    for email in enron_data:
-        email["id"] = str(uuid.uuid4())
-        insert(session, keyspace_name, initial_table_name, email)
-
-def get_enron_data(starting_filepath):
-    """
-    Gets the enron email threads from the data set files
-    """
-    data = email_parse.parse_email(starting_filepath)
-    return data
-
 if __name__ == "__main__":
     keyspace_name = "enron_cluster"
-    initial_table_name = "emails"
-    initial_table_columns = "id UUID PRIMARY KEY, thread_id int, date text, sender text, recipients list<text>, cc list<text>, bcc list<text>, subject text, message text"
-    enron_path = "enron_dataset"
+    cass_session = Cluster(['127.0.0.1']).connect()
 
-    cassandra_setup(keyspace_name, initial_table_name, initial_table_columns)
+    create_keyspace(cass_session, keyspace_name)
+
+    create_table(
+        cass_session,
+        keyspace_name,
+        'messages',
+        "id text PRIMARY KEY, thread int, time text, sender int, recipient list<int>, cc list<int>, bcc list<int>, subject text, message text"
+    )
+
+    create_table(
+        cass_session,
+        keyspace_name,
+        'threads',
+        'thread_title text, thread_id int PRIMARY KEY'
+    )
+
+    create_table(
+        cass_session,
+        keyspace_name,
+        'users',
+        'user text, user_id int PRIMARY KEY'
+    )
+
+    create_table(
+        cass_session,
+        keyspace_name,
+        'thread_users',
+        'thread_id text PRIMARY KEY, users list<int>'
+    )
+
+    # populate users table
+    with open('users.json', 'rb') as users_file:
+        users_json = json.loads(users_file.read())
+        for user in users_json:
+            user_row = {
+                "user": user,
+                "user_id": users_json[user]
+            }
+            insert(cass_session, keyspace_name, 'users', user_row)
+        users_file.close()
+
+    # populate threads table
+    with open('threads.json', 'rb') as threads_file:
+        threads_json = json.loads(threads_file.read())
+        for thread in threads_json:
+            thread_row = {
+                "thread_title": thread,
+                "thread_id": threads_json[thread]
+            }
+            insert(cass_session, keyspace_name, 'threads', thread_row)
+        threads_file.close()
+
+    # populate threads-users table
+    with open('thread-users.json', 'rb') as threads_users_file:
+        threads_users_json = json.loads(threads_users_file.read())
+        for thread in threads_users_json:
+            thread_users_row = {
+                "thread_id": thread,
+                "users": threads_users_json[thread]
+            }
+            insert(cass_session, keyspace_name, 'thread_users', thread_users_row)
+        threads_users_file.close()
+
+    # populate messages table
+    with open('messages.json', 'rb') as messages_file:
+        messages_json = json.loads(messages_file.read())
+        for message in messages_json:
+            message["id"] = str(uuid.uuid4())
+            insert(cass_session, keyspace_name, 'messages', message)
+        messages_file.close()
